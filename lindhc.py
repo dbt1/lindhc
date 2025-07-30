@@ -30,7 +30,7 @@ import time
 # Version
 VERSION_MAJOR="0"
 VERSION_MINOR="1"
-VERSION_PATCH="6"
+VERSION_PATCH="7"
 __version__ = f"{VERSION_MAJOR}.{VERSION_MINOR}.{VERSION_PATCH}"
 
 # ANSI Color Codes für bessere Darstellung
