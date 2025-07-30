@@ -39,7 +39,7 @@ sudo pacman -S python python-yaml smartmontools
 
 ```bash
 # Download
-wget https://raw.githubusercontent.com/user/repo/main/lindhc.py
+wget https://raw.githubusercontent.com/dbt1/lindhc/refs/heads/master/lindhc.py
 
 # Ausführbar machen
 chmod +x lindhc.py
