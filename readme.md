@@ -42,10 +42,10 @@ sudo pacman -S python python-yaml smartmontools
 wget https://raw.githubusercontent.com/user/repo/main/lindhc.py
 
 # Ausführbar machen
-chmod +x lindhc
+chmod +x lindhc.py
 
 # Optional: In PATH verschieben
-sudo mv lindhc.py /usr/local/bin/disk-health-checker.py
+sudo mv lindhc.py /usr/local/bin/lindhc.py
 ```
 
 ## Verwendung
@@ -170,8 +170,8 @@ Das Tool verwendet ein intelligentes Scoring-System (höher = problematischer):
 
 ```bash
 # UserParameter in zabbix_agentd.conf
-UserParameter=disk.health[*],/usr/local/bin/disk-health-check --json | jq -r '.disks[] | select(.name=="$1") | .score'
-UserParameter=disk.health.discovery,/usr/local/bin/disk-health-check --json | jq -r '.disks | map({"{#DISKNAME}": .name}) | {data: .}'
+UserParameter=disk.health[*],/usr/local/bin/lindhc.py --json | jq -r '.disks[] | select(.name=="$1") | .score'
+UserParameter=disk.health.discovery,/usr/local/bin/lindhc.py --json | jq -r '.disks | map({"{#DISKNAME}": .name}) | {data: .}'
 ```
 
 ### Nagios/Icinga
@@ -179,7 +179,7 @@ UserParameter=disk.health.discovery,/usr/local/bin/disk-health-check --json | jq
 ```bash
 #!/bin/bash
 # check_disk_health.sh
-OUTPUT=$(/usr/local/bin/disk-health-check --json)
+OUTPUT=$(/usr/local/bin/lindhc.py --json)
 CRITICAL=$(echo "$OUTPUT" | jq '[.disks[] | select(.score >= 500)] | length')
 WARNING=$(echo "$OUTPUT" | jq '[.disks[] | select(.score >= 100 and .score < 500)] | length')
 
@@ -199,7 +199,7 @@ fi
 
 ```bash
 # Täglicher Check um 2 Uhr nachts
-0 2 * * * /usr/local/bin/disk-health-check --json > /var/log/disk-health/$(date +\%Y-\%m-\%d).json
+0 2 * * * /usr/local/bin/lindhc.py --json > /var/log/disk-health/$(date +\%Y-\%m-\%d).json
 ```
 
 ## Beispiel-Ausgaben
@@ -207,7 +207,7 @@ fi
 ### Standard-Ausgabe
 ```
 ═══════════════════════════════════════════════════════════════
-   💾  Linux Disk Health Checker v2.0.0  💾
+   Linux Disk Health Checker v0.1.0
    2024-01-15 14:23:45
 ═══════════════════════════════════════════════════════════════
 
