@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Linux Disk Health Checker v2.0
+Linux Disk Health Checker
 Ein umfassendes, modulares Tool zur Überprüfung der Gesundheit aller physischen Laufwerke
 
 Features:
@@ -525,7 +525,7 @@ class OutputFormatter:
     def _print_header(self):
         """Druckt den Header"""
         print(f"\n{Colors.HEADER}{Colors.BOLD}═══════════════════════════════════════════════════════════════")
-        print(f"   {Symbols.DISK}  Linux Disk Health Checker v{__version__}  {Symbols.DISK}")
+        print(f"   Linux Disk Health Checker v{__version__}")
         print(f"   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"═══════════════════════════════════════════════════════════════{Colors.ENDC}\n")
     
