@@ -9,6 +9,7 @@ Features:
 - Konfigurierbare Schwellenwerte
 - Debug/Verbose Modi
 - Modulare Architektur
+- Robuste Tool-Pfad-Erkennung für Cronjobs/Systemd
 """
 
 import os
@@ -29,7 +30,7 @@ import time
 # Version
 VERSION_MAJOR="0"
 VERSION_MINOR="1"
-VERSION_PATCH="5"
+VERSION_PATCH="6"
 __version__ = f"{VERSION_MAJOR}.{VERSION_MINOR}.{VERSION_PATCH}"
 
 # ANSI Color Codes für bessere Darstellung
@@ -98,6 +99,16 @@ DEFAULT_CONFIG = {
     'output': {
         'max_mount_points_shown': 3,
         'show_io_stats': False
+    },
+    'tools': {
+        'search_paths': [
+            '/usr/bin',
+            '/bin', 
+            '/usr/sbin',
+            '/sbin',
+            '/usr/local/bin',
+            '/usr/local/sbin'
+        ]
     }
 }
 
@@ -107,11 +118,86 @@ DiskInfo = namedtuple('DiskInfo', [
     'scan_time'
 ])
 
+class ToolManager:
+    """Verwaltet Pfade zu externen Tools für robuste Ausführung"""
+    
+    def __init__(self, config=None):
+        self.config = config or DEFAULT_CONFIG
+        self.tool_paths = {}
+        self.logger = logging.getLogger(__name__)
+        
+    def find_tool(self, tool_name):
+        """Findet den vollständigen Pfad zu einem Tool"""
+        if tool_name in self.tool_paths:
+            return self.tool_paths[tool_name]
+        
+        # Zuerst mit 'which' versuchen
+        try:
+            result = subprocess.run(['which', tool_name], 
+                                  capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                path = result.stdout.strip()
+                if path and os.path.isfile(path) and os.access(path, os.X_OK):
+                    self.tool_paths[tool_name] = path
+                    self.logger.debug(f"Found {tool_name} at {path}")
+                    return path
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+        
+        # Fallback: In Standard-Pfaden suchen
+        search_paths = self.config.get('tools', {}).get('search_paths', [])
+        for search_path in search_paths:
+            full_path = os.path.join(search_path, tool_name)
+            if os.path.isfile(full_path) and os.access(full_path, os.X_OK):
+                self.tool_paths[tool_name] = full_path
+                self.logger.debug(f"Found {tool_name} at {full_path} (fallback)")
+                return full_path
+        
+        # Tool nicht gefunden
+        self.logger.warning(f"Tool {tool_name} not found in PATH or standard locations")
+        return None
+    
+    def get_tool_path(self, tool_name):
+        """Gibt den vollständigen Pfad zu einem Tool zurück"""
+        return self.tool_paths.get(tool_name)
+    
+    def check_dependencies(self):
+        """Prüft alle benötigten Tools und speichert ihre Pfade"""
+        missing = []
+        optional = []
+        
+        # Erforderliche Tools
+        required_tools = ['lsblk']
+        for tool in required_tools:
+            if not self.find_tool(tool):
+                missing.append(tool)
+        
+        # Optionale Tools  
+        optional_tools = ['smartctl']
+        for tool in optional_tools:
+            if not self.find_tool(tool):
+                optional.append(tool)
+        
+        return missing, optional
+    
+    def get_environment_info(self):
+        """Sammelt Informationen über die Ausführungsumgebung"""
+        return {
+            'path': os.environ.get('PATH', ''),
+            'user': os.environ.get('USER', 'unknown'),
+            'home': os.environ.get('HOME', ''),
+            'shell': os.environ.get('SHELL', ''),
+            'is_systemd': os.path.exists('/run/systemd/system'),
+            'is_cron': not os.isatty(sys.stdout.fileno()),
+            'tool_paths': self.tool_paths.copy()
+        }
+
 class DiskHealthChecker:
     def __init__(self, config=None, args=None):
         self.config = config or DEFAULT_CONFIG
         self.args = args
         self.logger = self._setup_logging()
+        self.tool_manager = ToolManager(config)
         
     def _setup_logging(self):
         """Konfiguriert das Logging-System"""
@@ -144,6 +230,14 @@ class DiskHealthChecker:
     def run_command(self, cmd, timeout=None):
         """Führt einen Befehl aus und gibt stdout/stderr zurück"""
         timeout = timeout or self.config['performance']['command_timeout']
+        
+        # Erstes Element durch vollständigen Pfad ersetzen, falls verfügbar
+        if cmd and len(cmd) > 0:
+            tool_name = os.path.basename(cmd[0])
+            full_path = self.tool_manager.get_tool_path(tool_name)
+            if full_path:
+                cmd = [full_path] + cmd[1:]
+        
         self.logger.debug(f"Executing: {' '.join(cmd)}")
         
         try:
@@ -161,29 +255,14 @@ class DiskHealthChecker:
             return "", "Timeout", -1
         except FileNotFoundError:
             self.logger.error(f"Command not found: {cmd[0]}")
-            return "", "Command not found", -2
+            return "", f"Command not found: {cmd[0]}", -2
         except Exception as e:
             self.logger.error(f"Command failed: {e}")
             return "", str(e), -3
     
     def check_dependencies(self):
         """Prüft ob alle benötigten Tools installiert sind"""
-        missing = []
-        optional = []
-        
-        # Erforderliche Tools
-        for tool in ['lsblk']:
-            stdout, stderr, code = self.run_command(['which', tool])
-            if code != 0:
-                missing.append(tool)
-        
-        # Optionale Tools
-        for tool in ['smartctl']:
-            stdout, stderr, code = self.run_command(['which', tool])
-            if code != 0:
-                optional.append(tool)
-        
-        return missing, optional
+        return self.tool_manager.check_dependencies()
     
     def list_disks(self):
         """Listet alle physischen Laufwerke auf"""
@@ -217,6 +296,9 @@ class DiskHealthChecker:
         if 'Permission denied' in stderr or 'Operation not permitted' in stderr:
             return 'NEED_ROOT', None
         
+        if 'Command not found' in stderr:
+            return 'NO_SMARTCTL', None
+        
         if 'SMART support is: Unavailable' in stdout:
             return 'NO_SMART', None
         
@@ -234,7 +316,7 @@ class DiskHealthChecker:
         path = f'/dev/{dev}'
         stdout, stderr, code = self.run_command(['smartctl', '-A', path])
         
-        if code != 0 or 'Permission denied' in stderr:
+        if code != 0 or 'Permission denied' in stderr or 'Command not found' in stderr:
             return attrs
         
         # Wichtige Attribute zum Überwachen
@@ -355,6 +437,9 @@ class DiskHealthChecker:
         elif info.smart_health == 'NO_SMART':
             score += cfg['smart_no_support_score']
             issues.append(('INFO', 'SMART nicht verfügbar'))
+        elif info.smart_health == 'NO_SMARTCTL':
+            score += cfg['smart_unknown_score']
+            issues.append(('WARNING', 'smartctl nicht verfügbar'))
         
         # SMART Attribute
         if info.smart_attrs:
@@ -393,7 +478,7 @@ class DiskHealthChecker:
         self.logger.info(f"Analyzing disk: /dev/{disk['name']}")
         
         smart_health, smart_output = self.get_smart_health(disk['name'])
-        smart_attrs = self.get_smart_attributes(disk['name']) if smart_health not in ['NEED_ROOT', 'NO_SMART'] else {}
+        smart_attrs = self.get_smart_attributes(disk['name']) if smart_health not in ['NEED_ROOT', 'NO_SMART', 'NO_SMARTCTL'] else {}
         temp = self.get_temperature(disk['name'])
         usage, mount_points = self.get_disk_usage(disk['name'])
         io_stats = self.get_io_stats(disk['name'])
@@ -449,6 +534,10 @@ class OutputFormatter:
     def format_console(self, disk_infos):
         """Formatierte Konsolenausgabe"""
         
+        # Umgebungsinformationen im Debug-Modus
+        if self.args and self.args.debug:
+            self._print_environment_info()
+        
         # Root-Check
         if not self.checker.is_root() and not self.args.quiet:
             print(f"{Colors.WARNING}{Symbols.WARNING} Hinweis: Script läuft ohne Root-Rechte.{Colors.ENDC}")
@@ -474,6 +563,7 @@ class OutputFormatter:
             'version': __version__,
             'timestamp': datetime.now().isoformat(),
             'is_root': self.checker.is_root(),
+            'environment': self.checker.tool_manager.get_environment_info(),
             'disks': []
         }
         
@@ -521,6 +611,19 @@ class OutputFormatter:
                 print("   Issues:")
                 for severity, issue in info.issues:
                     print(f"      [{severity}] {issue}")
+    
+    def _print_environment_info(self):
+        """Zeigt Umgebungsinformationen im Debug-Modus"""
+        env_info = self.checker.tool_manager.get_environment_info()
+        print(f"{Colors.OKCYAN}{Colors.BOLD}DEBUG: Umgebungsinformationen{Colors.ENDC}")
+        print(f"  USER: {env_info['user']}")
+        print(f"  PATH: {env_info['path'][:100]}{'...' if len(env_info['path']) > 100 else ''}")
+        print(f"  Systemd: {env_info['is_systemd']}")
+        print(f"  Cron/Non-TTY: {env_info['is_cron']}")
+        print(f"  Tool-Pfade gefunden:")
+        for tool, path in env_info['tool_paths'].items():
+            print(f"    {tool}: {path}")
+        print()
     
     def _print_header(self):
         """Druckt den Header"""
@@ -619,6 +722,19 @@ class OutputFormatter:
                         print(f"    → {issue}")
             print()
         
+        # Tool-Verfügbarkeit
+        missing_tools = []
+        for tool in ['smartctl']:
+            if not self.checker.tool_manager.get_tool_path(tool):
+                missing_tools.append(tool)
+        
+        if missing_tools and not self.args.quiet:
+            print(f"{Colors.WARNING}{Colors.BOLD}Fehlende optionale Tools:{Colors.ENDC}")
+            print(f"  Für erweiterte Funktionen installieren:")
+            if 'smartctl' in missing_tools:
+                print(f"    {Colors.OKGREEN}sudo apt install smartmontools{Colors.ENDC} (für SMART-Tests)")
+            print()
+        
         # Allgemeine Empfehlungen
         if not self.checker.is_root() and not self.args.quiet:
             print(f"{Colors.OKCYAN}{Colors.BOLD}Hinweis:{Colors.ENDC}")
@@ -695,6 +811,9 @@ Beispiele:
   
 Für vollständige SMART-Analysen mit sudo ausführen:
   sudo %(prog)s
+
+Für Cronjobs vollständigen Pfad verwenden:
+  /usr/local/bin/%(prog)s --json
         """
     )
     
@@ -771,12 +890,12 @@ Für vollständige SMART-Analysen mit sudo ausführen:
             return 1
         
         if optional and not args.quiet:
-            for tool in optional:
-                if tool == 'smartctl':
-                    print(f"{Colors.WARNING}smartctl nicht gefunden!{Colors.ENDC}")
-                    print(f"Bitte installieren Sie smartmontools für SMART-Analysen:")
-                    print(f"  {Colors.OKGREEN}sudo apt install smartmontools{Colors.ENDC} (Debian/Ubuntu)")
-                    print(f"  {Colors.OKGREEN}sudo yum install smartmontools{Colors.ENDC} (RedHat/CentOS)\n")
+            print(f"{Colors.WARNING}Optionale Tools nicht gefunden: {', '.join(optional)}{Colors.ENDC}")
+            print(f"Für vollständige Funktionalität installieren:")
+            if 'smartctl' in optional:
+                print(f"  {Colors.OKGREEN}sudo apt install smartmontools{Colors.ENDC} (Debian/Ubuntu)")
+                print(f"  {Colors.OKGREEN}sudo yum install smartmontools{Colors.ENDC} (RedHat/CentOS)")
+            print()
         
         if not args.json and not args.quiet:
             formatter._print_header()
