@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
 Linux Disk Health Checker
-Ein umfassendes, modulares Tool zur Überprüfung der Gesundheit aller physischen Laufwerke
+A comprehensive, modular tool for checking the health of all physical drives
 
 Features:
-- Parallele Ausführung für bessere Performance
-- Multiple Ausgabeformate (Konsole, JSON, Plain)
-- Konfigurierbare Schwellenwerte
-- Debug/Verbose Modi
-- Modulare Architektur
-- Robuste Tool-Pfad-Erkennung für Cronjobs/Systemd
+- Parallel execution for better performance
+- Multiple output formats (Console, JSON, Plain)
+- Configurable thresholds
+- Debug/Verbose modes
+- Modular architecture
+- Robust tool path detection for cronjobs/systemd
 """
 
 import os
@@ -33,7 +33,7 @@ VERSION_MINOR="1"
 VERSION_PATCH="7"
 __version__ = f"{VERSION_MAJOR}.{VERSION_MINOR}.{VERSION_PATCH}"
 
-# ANSI Color Codes für bessere Darstellung
+# ANSI Color Codes for better display
 class Colors:
     HEADER = '\033[95m'
     OKBLUE = '\033[94m'
@@ -47,12 +47,12 @@ class Colors:
     
     @classmethod
     def disable(cls):
-        """Deaktiviert alle Farben"""
+        """Disables all colors"""
         for attr in dir(cls):
             if not attr.startswith('_'):
                 setattr(cls, attr, '')
 
-# Unicode Symbole für bessere Visualisierung
+# Unicode symbols for better visualization
 class Symbols:
     OK = '✓'
     WARNING = '⚠'
@@ -64,7 +64,7 @@ class Symbols:
     
     @classmethod
     def disable(cls):
-        """Ersetzt Symbole durch ASCII"""
+        """Replaces symbols with ASCII"""
         cls.OK = '[OK]'
         cls.WARNING = '[!]'
         cls.ERROR = '[X]'
@@ -73,7 +73,7 @@ class Symbols:
         cls.TEMP = '[T]'
         cls.CLOCK = '[>]'
 
-# Default Konfiguration
+# Default configuration
 DEFAULT_CONFIG = {
     'thresholds': {
         'smart_fail_score': 1000,
@@ -119,7 +119,7 @@ DiskInfo = namedtuple('DiskInfo', [
 ])
 
 class ToolManager:
-    """Verwaltet Pfade zu externen Tools für robuste Ausführung"""
+    """Manages paths to external tools for robust execution"""
     
     def __init__(self, config=None):
         self.config = config or DEFAULT_CONFIG
@@ -127,11 +127,11 @@ class ToolManager:
         self.logger = logging.getLogger(__name__)
         
     def find_tool(self, tool_name):
-        """Findet den vollständigen Pfad zu einem Tool"""
+        """Finds the full path to a tool"""
         if tool_name in self.tool_paths:
             return self.tool_paths[tool_name]
         
-        # Zuerst mit 'which' versuchen
+        # First try with 'which'
         try:
             result = subprocess.run(['which', tool_name], 
                                   capture_output=True, text=True, timeout=5)
@@ -144,7 +144,7 @@ class ToolManager:
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
         
-        # Fallback: In Standard-Pfaden suchen
+        # Fallback: Search in standard paths
         search_paths = self.config.get('tools', {}).get('search_paths', [])
         for search_path in search_paths:
             full_path = os.path.join(search_path, tool_name)
@@ -153,26 +153,26 @@ class ToolManager:
                 self.logger.debug(f"Found {tool_name} at {full_path} (fallback)")
                 return full_path
         
-        # Tool nicht gefunden
+        # Tool not found
         self.logger.warning(f"Tool {tool_name} not found in PATH or standard locations")
         return None
     
     def get_tool_path(self, tool_name):
-        """Gibt den vollständigen Pfad zu einem Tool zurück"""
+        """Returns the full path to a tool"""
         return self.tool_paths.get(tool_name)
     
     def check_dependencies(self):
-        """Prüft alle benötigten Tools und speichert ihre Pfade"""
+        """Checks all required tools and stores their paths"""
         missing = []
         optional = []
         
-        # Erforderliche Tools
+        # Required tools
         required_tools = ['lsblk']
         for tool in required_tools:
             if not self.find_tool(tool):
                 missing.append(tool)
         
-        # Optionale Tools  
+        # Optional tools  
         optional_tools = ['smartctl']
         for tool in optional_tools:
             if not self.find_tool(tool):
@@ -181,7 +181,7 @@ class ToolManager:
         return missing, optional
     
     def get_environment_info(self):
-        """Sammelt Informationen über die Ausführungsumgebung"""
+        """Collects information about the execution environment"""
         return {
             'path': os.environ.get('PATH', ''),
             'user': os.environ.get('USER', 'unknown'),
@@ -200,7 +200,7 @@ class DiskHealthChecker:
         self.tool_manager = ToolManager(config)
         
     def _setup_logging(self):
-        """Konfiguriert das Logging-System"""
+        """Configures the logging system"""
         level = logging.WARNING
         if self.args:
             if self.args.debug:
@@ -216,7 +216,7 @@ class DiskHealthChecker:
         return logging.getLogger(__name__)
     
     def format_bytes(self, bytes_value):
-        """Konvertiert Bytes in lesbare Einheiten"""
+        """Converts bytes to readable units"""
         for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
             if bytes_value < 1024.0:
                 return f"{bytes_value:.1f} {unit}"
@@ -224,14 +224,14 @@ class DiskHealthChecker:
         return f"{bytes_value:.1f} PB"
     
     def is_root(self):
-        """Prüft ob das Script mit Root-Rechten läuft"""
+        """Checks if the script is running with root privileges"""
         return os.geteuid() == 0
     
     def run_command(self, cmd, timeout=None):
-        """Führt einen Befehl aus und gibt stdout/stderr zurück"""
+        """Executes a command and returns stdout/stderr"""
         timeout = timeout or self.config['performance']['command_timeout']
         
-        # Erstes Element durch vollständigen Pfad ersetzen, falls verfügbar
+        # Replace first element with full path if available
         if cmd and len(cmd) > 0:
             tool_name = os.path.basename(cmd[0])
             full_path = self.tool_manager.get_tool_path(tool_name)
@@ -261,11 +261,11 @@ class DiskHealthChecker:
             return "", str(e), -3
     
     def check_dependencies(self):
-        """Prüft ob alle benötigten Tools installiert sind"""
+        """Checks if all required tools are installed"""
         return self.tool_manager.check_dependencies()
     
     def list_disks(self):
-        """Listet alle physischen Laufwerke auf"""
+        """Lists all physical drives"""
         stdout, stderr, code = self.run_command(['lsblk', '-dJ', '-o', 'NAME,MODEL,SIZE,TYPE,ROTA'])
         if code != 0:
             self.logger.error(f"lsblk failed: {stderr}")
@@ -289,7 +289,7 @@ class DiskHealthChecker:
             return []
     
     def get_smart_health(self, dev):
-        """Holt SMART Health Status"""
+        """Gets SMART health status"""
         path = f'/dev/{dev}'
         stdout, stderr, code = self.run_command(['smartctl', '-H', path])
         
@@ -311,7 +311,7 @@ class DiskHealthChecker:
         return 'UNKNOWN', stdout
     
     def get_smart_attributes(self, dev):
-        """Extrahiert wichtige SMART Attribute"""
+        """Extracts important SMART attributes"""
         attrs = {}
         path = f'/dev/{dev}'
         stdout, stderr, code = self.run_command(['smartctl', '-A', path])
@@ -319,7 +319,7 @@ class DiskHealthChecker:
         if code != 0 or 'Permission denied' in stderr or 'Command not found' in stderr:
             return attrs
         
-        # Wichtige Attribute zum Überwachen
+        # Important attributes to monitor
         important_attrs = {
             '5': 'Reallocated_Sectors',
             '187': 'Reported_Uncorrect',
@@ -345,14 +345,14 @@ class DiskHealthChecker:
         return attrs
     
     def get_temperature(self, dev):
-        """Holt die aktuelle Temperatur des Laufwerks"""
+        """Gets the current temperature of the drive"""
         path = f'/dev/{dev}'
         stdout, stderr, code = self.run_command(['smartctl', '-A', path])
         
         if code != 0:
             return None
         
-        # Suche nach Temperatur in verschiedenen Formaten
+        # Search for temperature in various formats
         temp_patterns = [
             r'Temperature_Celsius.*\s(\d+)\s*(?:C|$)',
             r'Current Temperature:\s*(\d+)\s*Celsius',
@@ -367,7 +367,7 @@ class DiskHealthChecker:
         return None
     
     def get_disk_usage(self, dev):
-        """Ermittelt die Belegung aller Partitionen eines Laufwerks"""
+        """Determines the usage of all partitions on a drive"""
         mount_info = []
         max_usage = 0
         
@@ -379,7 +379,7 @@ class DiskHealthChecker:
             if not line:
                 continue
             parts = line.split(None, 2)
-            if len(parts) >= 2 and parts[1]:  # Hat Mountpoint
+            if len(parts) >= 2 and parts[1]:  # Has mountpoint
                 mountpoint = parts[1]
                 try:
                     total, used, free = shutil.disk_usage(mountpoint)
@@ -398,7 +398,7 @@ class DiskHealthChecker:
         return max_usage if mount_info else None, mount_info
     
     def get_io_stats(self, dev):
-        """Holt I/O Statistiken aus /proc/diskstats"""
+        """Gets I/O statistics from /proc/diskstats"""
         if not self.config['output']['show_io_stats']:
             return None
             
@@ -419,7 +419,7 @@ class DiskHealthChecker:
         return None
     
     def calculate_score(self, info):
-        """Berechnet einen Gesundheitsscore (höher = schlechter)"""
+        """Calculates a health score (higher = worse)"""
         score = 0
         issues = []
         cfg = self.config['thresholds']
@@ -427,21 +427,21 @@ class DiskHealthChecker:
         # SMART Health Status
         if info.smart_health == 'FAILED':
             score += cfg['smart_fail_score']
-            issues.append(('CRITICAL', 'SMART Health Check fehlgeschlagen!'))
+            issues.append(('CRITICAL', 'SMART Health Check failed!'))
         elif info.smart_health == 'UNKNOWN':
             score += cfg['smart_unknown_score']
-            issues.append(('WARNING', 'SMART Status unbekannt'))
+            issues.append(('WARNING', 'SMART status unknown'))
         elif info.smart_health == 'NEED_ROOT':
             score += cfg['smart_need_root_score']
-            issues.append(('INFO', 'Root-Rechte für SMART-Check benötigt'))
+            issues.append(('INFO', 'Root privileges required for SMART check'))
         elif info.smart_health == 'NO_SMART':
             score += cfg['smart_no_support_score']
-            issues.append(('INFO', 'SMART nicht verfügbar'))
+            issues.append(('INFO', 'SMART not available'))
         elif info.smart_health == 'NO_SMARTCTL':
             score += cfg['smart_unknown_score']
-            issues.append(('WARNING', 'smartctl nicht verfügbar'))
+            issues.append(('WARNING', 'smartctl not available'))
         
-        # SMART Attribute
+        # SMART Attributes
         if info.smart_attrs:
             critical_attrs = ['Reallocated_Sectors', 'Current_Pending_Sector', 'Offline_Uncorrectable']
             for attr in critical_attrs:
@@ -449,31 +449,31 @@ class DiskHealthChecker:
                     score += cfg['reallocated_sector_multiplier'] * info.smart_attrs[attr]
                     issues.append(('WARNING', f'{attr}: {info.smart_attrs[attr]}'))
         
-        # Temperatur
+        # Temperature
         if info.temp:
             if info.temp > cfg['temp_critical']:
                 score += cfg['temp_critical_score']
-                issues.append(('CRITICAL', f'Sehr hohe Temperatur: {info.temp}°C'))
+                issues.append(('CRITICAL', f'Very high temperature: {info.temp}°C'))
             elif info.temp > cfg['temp_warning']:
                 score += cfg['temp_warning_score']
-                issues.append(('WARNING', f'Erhöhte Temperatur: {info.temp}°C'))
+                issues.append(('WARNING', f'Elevated temperature: {info.temp}°C'))
         
-        # Speicherplatz
+        # Storage space
         if info.usage:
             if info.usage >= cfg['usage_critical']:
                 score += cfg['usage_critical_score']
-                issues.append(('CRITICAL', f'Kritisch wenig Speicherplatz: {info.usage}%'))
+                issues.append(('CRITICAL', f'Critically low disk space: {info.usage}%'))
             elif info.usage >= cfg['usage_warning']:
                 score += cfg['usage_warning_score']
-                issues.append(('WARNING', f'Wenig Speicherplatz: {info.usage}%'))
+                issues.append(('WARNING', f'Low disk space: {info.usage}%'))
             elif info.usage >= cfg['usage_info']:
                 score += cfg['usage_info_score']
-                issues.append(('INFO', f'Speicherplatz wird knapp: {info.usage}%'))
+                issues.append(('INFO', f'Disk space getting low: {info.usage}%'))
         
         return score, issues
     
     def analyze_disk(self, disk):
-        """Analysiert ein einzelnes Laufwerk"""
+        """Analyzes a single drive"""
         start_time = time.time()
         self.logger.info(f"Analyzing disk: /dev/{disk['name']}")
         
@@ -505,7 +505,7 @@ class DiskHealthChecker:
         return info
     
     def analyze_all_disks(self, disks):
-        """Analysiert alle Laufwerke parallel"""
+        """Analyzes all drives in parallel"""
         disk_infos = []
         max_workers = self.config['performance']['max_workers']
         
@@ -525,30 +525,30 @@ class DiskHealthChecker:
         return disk_infos
 
 class OutputFormatter:
-    """Klasse für verschiedene Ausgabeformate"""
+    """Class for different output formats"""
     
     def __init__(self, checker, args):
         self.checker = checker
         self.args = args
         
     def format_console(self, disk_infos):
-        """Formatierte Konsolenausgabe"""
+        """Formatted console output"""
         
-        # Umgebungsinformationen im Debug-Modus
+        # Environment information in debug mode
         if self.args and self.args.debug:
             self._print_environment_info()
         
-        # Root-Check
+        # Root check
         if not self.checker.is_root() and not self.args.quiet:
-            print(f"{Colors.WARNING}{Symbols.WARNING} Hinweis: Script läuft ohne Root-Rechte.{Colors.ENDC}")
-            print(f"   Einige Tests (SMART, Temperatur) benötigen Root-Zugriff.")
-            print(f"   Für vollständige Analyse mit sudo ausführen.\n")
+            print(f"{Colors.WARNING}{Symbols.WARNING} Note: Script running without root privileges.{Colors.ENDC}")
+            print(f"   Some tests (SMART, temperature) require root access.")
+            print(f"   Run with sudo for complete analysis.\n")
         
-        # Sortiere nach Score
+        # Sort by score
         disk_infos.sort(key=lambda x: x.score, reverse=True)
         
         print(f"\n{Colors.BOLD}{'═' * 60}{Colors.ENDC}")
-        print(f"{Colors.BOLD}Ergebnisse (sortiert nach Dringlichkeit):{Colors.ENDC}")
+        print(f"{Colors.BOLD}Results (sorted by urgency):{Colors.ENDC}")
         print(f"{Colors.BOLD}{'═' * 60}{Colors.ENDC}\n")
         
         for rank, info in enumerate(disk_infos, 1):
@@ -558,7 +558,7 @@ class OutputFormatter:
         self._print_summary(disk_infos)
     
     def format_json(self, disk_infos):
-        """JSON-Ausgabe für maschinelle Verarbeitung"""
+        """JSON output for machine processing"""
         output = {
             'version': __version__,
             'timestamp': datetime.now().isoformat(),
@@ -593,7 +593,7 @@ class OutputFormatter:
         print(json.dumps(output, indent=2))
     
     def format_plain(self, disk_infos):
-        """Einfache Textausgabe ohne Formatierung"""
+        """Simple text output without formatting"""
         print(f"Disk Health Check Report - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print("=" * 60)
         
@@ -613,28 +613,28 @@ class OutputFormatter:
                     print(f"      [{severity}] {issue}")
     
     def _print_environment_info(self):
-        """Zeigt Umgebungsinformationen im Debug-Modus"""
+        """Shows environment information in debug mode"""
         env_info = self.checker.tool_manager.get_environment_info()
-        print(f"{Colors.OKCYAN}{Colors.BOLD}DEBUG: Umgebungsinformationen{Colors.ENDC}")
+        print(f"{Colors.OKCYAN}{Colors.BOLD}DEBUG: Environment information{Colors.ENDC}")
         print(f"  USER: {env_info['user']}")
         print(f"  PATH: {env_info['path'][:100]}{'...' if len(env_info['path']) > 100 else ''}")
         print(f"  Systemd: {env_info['is_systemd']}")
         print(f"  Cron/Non-TTY: {env_info['is_cron']}")
-        print(f"  Tool-Pfade gefunden:")
+        print(f"  Tool paths found:")
         for tool, path in env_info['tool_paths'].items():
             print(f"    {tool}: {path}")
         print()
     
     def _print_header(self):
-        """Druckt den Header"""
+        """Prints the header"""
         print(f"\n{Colors.HEADER}{Colors.BOLD}═══════════════════════════════════════════════════════════════")
         print(f"   Linux Disk Health Checker v{__version__}")
         print(f"   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"═══════════════════════════════════════════════════════════════{Colors.ENDC}\n")
     
     def _print_disk_summary(self, rank, info):
-        """Druckt eine Zusammenfassung für ein Laufwerk"""
-        # Farbcodierung basierend auf Score
+        """Prints a summary for a drive"""
+        # Color coding based on score
         if info.score >= 500:
             color = Colors.FAIL
             status_symbol = Symbols.ERROR
@@ -651,33 +651,33 @@ class OutputFormatter:
         print(f"{color}{Colors.BOLD}#{rank} - /dev/{info.name} - {info.model} ({info.size}){Colors.ENDC}")
         print(f"   Status: {color}{status_symbol} Score: {info.score}{Colors.ENDC}")
         
-        # Temperatur
+        # Temperature
         if info.temp:
             temp_color = Colors.FAIL if info.temp > self.checker.config['thresholds']['temp_warning'] else Colors.OKGREEN
-            print(f"   {Symbols.TEMP} Temperatur: {temp_color}{info.temp}°C{Colors.ENDC}")
+            print(f"   {Symbols.TEMP} Temperature: {temp_color}{info.temp}°C{Colors.ENDC}")
         
-        # Speicherplatz
+        # Storage space
         if info.usage is not None:
             cfg = self.checker.config['thresholds']
             usage_color = Colors.FAIL if info.usage >= cfg['usage_warning'] else Colors.WARNING if info.usage >= cfg['usage_info'] else Colors.OKGREEN
-            print(f"   {Symbols.DISK} Belegung: {usage_color}{info.usage}%{Colors.ENDC}")
+            print(f"   {Symbols.DISK} Usage: {usage_color}{info.usage}%{Colors.ENDC}")
             
-            # Mount Points Details
+            # Mount points details
             max_shown = self.checker.config['output']['max_mount_points_shown']
             for mp in info.mount_points[:max_shown]:
                 print(f"      └─ {mp['mountpoint']}: {mp['usage']}% ({mp['used']}/{mp['total']})")
         
-        # I/O Stats (wenn aktiviert)
+        # I/O Stats (if enabled)
         if info.io_stats and self.checker.config['output']['show_io_stats']:
             print(f"   {Symbols.CLOCK} I/O: {info.io_stats['read_ios']:,} reads, {info.io_stats['write_ios']:,} writes")
         
-        # Scan-Zeit (im Debug-Modus)
+        # Scan time (in debug mode)
         if self.args and self.args.debug:
             print(f"   Scan time: {info.scan_time:.2f}s")
         
-        # Probleme
+        # Issues
         if info.issues:
-            print(f"   {Symbols.WARNING} Gefundene Probleme:")
+            print(f"   {Symbols.WARNING} Found issues:")
             for severity, issue in info.issues:
                 if severity == 'CRITICAL':
                     print(f"      {Colors.FAIL}• {issue}{Colors.ENDC}")
@@ -689,8 +689,8 @@ class OutputFormatter:
         print()
     
     def _print_recommendations(self, disk_infos):
-        """Gibt Empfehlungen basierend auf den Ergebnissen aus"""
-        print(f"{Colors.BOLD}\n{Symbols.INFO} Empfehlungen:{Colors.ENDC}\n")
+        """Provides recommendations based on results"""
+        print(f"{Colors.BOLD}\n{Symbols.INFO} Recommendations:{Colors.ENDC}\n")
         
         critical_disks = []
         warning_disks = []
@@ -702,19 +702,19 @@ class OutputFormatter:
                 warning_disks.append(info)
         
         if critical_disks:
-            print(f"{Colors.FAIL}{Colors.BOLD}KRITISCH - Sofortiges Handeln erforderlich:{Colors.ENDC}")
+            print(f"{Colors.FAIL}{Colors.BOLD}CRITICAL - Immediate action required:{Colors.ENDC}")
             for disk in critical_disks:
                 print(f"  {Colors.FAIL}• /dev/{disk.name}:{Colors.ENDC}")
                 if disk.smart_health == 'FAILED':
-                    print(f"    → SOFORT Backup erstellen! Laufwerk steht vor dem Ausfall!")
+                    print(f"    → IMMEDIATELY create backup! Drive is about to fail!")
                 if disk.usage and disk.usage >= self.checker.config['thresholds']['usage_critical']:
-                    print(f"    → Dringend Speicherplatz freigeben oder Daten auslagern!")
+                    print(f"    → Urgently free up disk space or migrate data!")
                 if disk.temp and disk.temp > self.checker.config['thresholds']['temp_critical']:
-                    print(f"    → Kühlung überprüfen! Laufwerk überhitzt!")
+                    print(f"    → Check cooling! Drive is overheating!")
             print()
         
         if warning_disks:
-            print(f"{Colors.WARNING}{Colors.BOLD}WARNUNG - Aufmerksamkeit erforderlich:{Colors.ENDC}")
+            print(f"{Colors.WARNING}{Colors.BOLD}WARNING - Attention required:{Colors.ENDC}")
             for disk in warning_disks:
                 print(f"  {Colors.WARNING}• /dev/{disk.name}:{Colors.ENDC}")
                 for severity, issue in disk.issues:
@@ -722,52 +722,52 @@ class OutputFormatter:
                         print(f"    → {issue}")
             print()
         
-        # Tool-Verfügbarkeit
+        # Tool availability
         missing_tools = []
         for tool in ['smartctl']:
             if not self.checker.tool_manager.get_tool_path(tool):
                 missing_tools.append(tool)
         
         if missing_tools and not self.args.quiet:
-            print(f"{Colors.WARNING}{Colors.BOLD}Fehlende optionale Tools:{Colors.ENDC}")
-            print(f"  Für erweiterte Funktionen installieren:")
+            print(f"{Colors.WARNING}{Colors.BOLD}Missing optional tools:{Colors.ENDC}")
+            print(f"  Install for extended functionality:")
             if 'smartctl' in missing_tools:
-                print(f"    {Colors.OKGREEN}sudo apt install smartmontools{Colors.ENDC} (für SMART-Tests)")
+                print(f"    {Colors.OKGREEN}sudo apt install smartmontools{Colors.ENDC} (for SMART tests)")
             print()
         
-        # Allgemeine Empfehlungen
+        # General recommendations
         if not self.checker.is_root() and not self.args.quiet:
-            print(f"{Colors.OKCYAN}{Colors.BOLD}Hinweis:{Colors.ENDC}")
-            print(f"  • Für vollständige SMART-Tests das Script mit sudo ausführen:")
+            print(f"{Colors.OKCYAN}{Colors.BOLD}Note:{Colors.ENDC}")
+            print(f"  • For complete SMART tests run the script with sudo:")
             print(f"    {Colors.OKGREEN}sudo {' '.join(sys.argv)}{Colors.ENDC}")
             print()
         
-        # Wartungsempfehlungen
+        # Maintenance recommendations
         if not self.args.check_only:
-            print(f"{Colors.OKBLUE}{Colors.BOLD}Regelmäßige Wartung:{Colors.ENDC}")
-            print(f"  • Führen Sie diesen Check monatlich durch")
-            print(f"  • Erstellen Sie regelmäßige Backups wichtiger Daten")
-            print(f"  • Überwachen Sie die Temperatur bei hoher Auslastung")
-            print(f"  • Halten Sie mindestens 10-20% freien Speicherplatz")
+            print(f"{Colors.OKBLUE}{Colors.BOLD}Regular maintenance:{Colors.ENDC}")
+            print(f"  • Run this check monthly")
+            print(f"  • Create regular backups of important data")
+            print(f"  • Monitor temperature under high load")
+            print(f"  • Keep at least 10-20% free disk space")
     
     def _print_summary(self, disk_infos):
-        """Zusammenfassung"""
+        """Summary"""
         print(f"\n{Colors.BOLD}{'═' * 60}{Colors.ENDC}")
         critical_count = sum(1 for d in disk_infos if d.score >= 500)
         warning_count = sum(1 for d in disk_infos if 100 <= d.score < 500)
         ok_count = sum(1 for d in disk_infos if d.score < 100)
         
-        print(f"{Colors.BOLD}Zusammenfassung:{Colors.ENDC}")
-        print(f"  {Colors.FAIL if critical_count else Colors.OKGREEN}• Kritisch: {critical_count}{Colors.ENDC}")
-        print(f"  {Colors.WARNING if warning_count else Colors.OKGREEN}• Warnung:  {warning_count}{Colors.ENDC}")
+        print(f"{Colors.BOLD}Summary:{Colors.ENDC}")
+        print(f"  {Colors.FAIL if critical_count else Colors.OKGREEN}• Critical: {critical_count}{Colors.ENDC}")
+        print(f"  {Colors.WARNING if warning_count else Colors.OKGREEN}• Warning:  {warning_count}{Colors.ENDC}")
         print(f"  {Colors.OKGREEN}• OK:       {ok_count}{Colors.ENDC}")
         
         total_scan_time = sum(d.scan_time for d in disk_infos)
-        print(f"\nGesamte Scan-Zeit: {total_scan_time:.2f}s")
+        print(f"\nTotal scan time: {total_scan_time:.2f}s")
         print(f"{Colors.BOLD}{'═' * 60}{Colors.ENDC}\n")
 
 def load_config(config_file):
-    """Lädt Konfiguration aus YAML-Datei"""
+    """Loads configuration from YAML file"""
     if not config_file or not Path(config_file).exists():
         return DEFAULT_CONFIG
     
@@ -775,7 +775,7 @@ def load_config(config_file):
         with open(config_file, 'r') as f:
             user_config = yaml.safe_load(f)
         
-        # Merge mit Default-Config
+        # Merge with default config
         config = DEFAULT_CONFIG.copy()
         for key in user_config:
             if key in config and isinstance(config[key], dict):
@@ -789,68 +789,68 @@ def load_config(config_file):
         return DEFAULT_CONFIG
 
 def create_sample_config():
-    """Erstellt eine Beispiel-Konfigurationsdatei"""
+    """Creates a sample configuration file"""
     sample_file = "disk_health_checker.yaml"
     with open(sample_file, 'w') as f:
         yaml.dump(DEFAULT_CONFIG, f, default_flow_style=False)
     print(f"Sample configuration file created: {sample_file}")
 
 def main():
-    """Hauptfunktion"""
+    """Main function"""
     parser = argparse.ArgumentParser(
-        description='Linux Disk Health Checker - Umfassendes Tool zur Überprüfung der Laufwerksgesundheit',
+        description='Linux Disk Health Checker - Comprehensive tool for checking drive health',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Beispiele:
-  %(prog)s                     # Standard-Analyse mit farbiger Ausgabe
-  %(prog)s --json              # JSON-Ausgabe für Monitoring-Tools
-  %(prog)s --check-only        # Nur prüfen, keine Empfehlungen
-  %(prog)s --smart-only        # Nur SMART-Tests ausführen
-  %(prog)s --config my.yaml    # Mit eigener Konfiguration
-  %(prog)s --create-config     # Beispiel-Konfiguration erstellen
+Examples:
+  %(prog)s                     # Standard analysis with colored output
+  %(prog)s --json              # JSON output for monitoring tools
+  %(prog)s --check-only        # Check only, no recommendations
+  %(prog)s --smart-only        # Run SMART tests only
+  %(prog)s --config my.yaml    # With custom configuration
+  %(prog)s --create-config     # Create sample configuration
   
-Für vollständige SMART-Analysen mit sudo ausführen:
+For complete SMART analysis run with sudo:
   sudo %(prog)s
 
-Für Cronjobs vollständigen Pfad verwenden:
+For cronjobs use full path:
   /usr/local/bin/%(prog)s --json
         """
     )
     
-    # Ausgabeoptionen
+    # Output options
     output_group = parser.add_mutually_exclusive_group()
     output_group.add_argument('--json', action='store_true',
-                            help='JSON-Ausgabe für maschinelle Verarbeitung')
+                            help='JSON output for machine processing')
     output_group.add_argument('--plain', action='store_true',
-                            help='Einfache Textausgabe ohne Farben/Symbole')
+                            help='Simple text output without colors/symbols')
     
-    # Analyse-Optionen
+    # Analysis options
     parser.add_argument('--smart-only', action='store_true',
-                       help='Nur SMART-Tests durchführen')
+                       help='Run SMART tests only')
     parser.add_argument('--usage-only', action='store_true',
-                       help='Nur Speicherbelegung prüfen')
+                       help='Check disk usage only')
     parser.add_argument('--check-only', action='store_true',
-                       help='Nur Prüfung, keine Empfehlungen ausgeben')
+                       help='Check only, no recommendations')
     
-    # Performance-Optionen
+    # Performance options
     parser.add_argument('--parallel', type=int, metavar='N',
-                       help='Anzahl paralleler Worker (Standard: 4)')
+                       help='Number of parallel workers (default: 4)')
     parser.add_argument('--timeout', type=int, metavar='SEC',
-                       help='Timeout für Befehle in Sekunden (Standard: 10)')
+                       help='Command timeout in seconds (default: 10)')
     
-    # Konfiguration
+    # Configuration
     parser.add_argument('--config', metavar='FILE',
-                       help='Konfigurationsdatei (YAML)')
+                       help='Configuration file (YAML)')
     parser.add_argument('--create-config', action='store_true',
-                       help='Beispiel-Konfigurationsdatei erstellen')
+                       help='Create sample configuration file')
     
     # Debug/Logging
     parser.add_argument('-v', '--verbose', action='store_true',
-                       help='Ausführliche Ausgabe')
+                       help='Verbose output')
     parser.add_argument('-d', '--debug', action='store_true',
-                       help='Debug-Ausgabe mit allen Details')
+                       help='Debug output with all details')
     parser.add_argument('-q', '--quiet', action='store_true',
-                       help='Minimale Ausgabe')
+                       help='Minimal output')
     
     # Version
     parser.add_argument('--version', action='version',
@@ -858,40 +858,40 @@ Für Cronjobs vollständigen Pfad verwenden:
     
     args = parser.parse_args()
     
-    # Beispiel-Config erstellen
+    # Create sample config
     if args.create_config:
         create_sample_config()
         return 0
     
-    # Konfiguration laden
+    # Load configuration
     config = load_config(args.config)
     
-    # Performance-Parameter überschreiben
+    # Override performance parameters
     if args.parallel:
         config['performance']['max_workers'] = args.parallel
     if args.timeout:
         config['performance']['command_timeout'] = args.timeout
     
-    # Farben/Symbole deaktivieren für plain/json
+    # Disable colors/symbols for plain/json
     if args.plain or args.json:
         Colors.disable()
         Symbols.disable()
     
-    # Checker initialisieren
+    # Initialize checker
     checker = DiskHealthChecker(config, args)
     formatter = OutputFormatter(checker, args)
     
     try:
-        # Dependencies prüfen
+        # Check dependencies
         missing, optional = checker.check_dependencies()
         if missing:
-            print(f"{Colors.FAIL}Fehlende erforderliche Tools: {', '.join(missing)}{Colors.ENDC}")
-            print("Bitte installieren Sie die fehlenden Tools und versuchen Sie es erneut.")
+            print(f"{Colors.FAIL}Missing required tools: {', '.join(missing)}{Colors.ENDC}")
+            print("Please install the missing tools and try again.")
             return 1
         
         if optional and not args.quiet:
-            print(f"{Colors.WARNING}Optionale Tools nicht gefunden: {', '.join(optional)}{Colors.ENDC}")
-            print(f"Für vollständige Funktionalität installieren:")
+            print(f"{Colors.WARNING}Optional tools not found: {', '.join(optional)}{Colors.ENDC}")
+            print(f"For full functionality install:")
             if 'smartctl' in optional:
                 print(f"  {Colors.OKGREEN}sudo apt install smartmontools{Colors.ENDC} (Debian/Ubuntu)")
                 print(f"  {Colors.OKGREEN}sudo yum install smartmontools{Colors.ENDC} (RedHat/CentOS)")
@@ -899,25 +899,25 @@ Für Cronjobs vollständigen Pfad verwenden:
         
         if not args.json and not args.quiet:
             formatter._print_header()
-            print(f"{Colors.BOLD}Suche Laufwerke...{Colors.ENDC}")
+            print(f"{Colors.BOLD}Searching for drives...{Colors.ENDC}")
         
-        # Laufwerke finden
+        # Find drives
         disks = checker.list_disks()
         if not disks:
-            print(f"{Colors.FAIL}Keine physischen Laufwerke gefunden!{Colors.ENDC}")
+            print(f"{Colors.FAIL}No physical drives found!{Colors.ENDC}")
             return 1
         
         if not args.json and not args.quiet:
-            print(f"Gefunden: {len(disks)} Laufwerk(e)")
-            print(f"\n{Colors.BOLD}Analysiere Laufwerke", end='', flush=True)
+            print(f"Found: {len(disks)} drive(s)")
+            print(f"\n{Colors.BOLD}Analyzing drives", end='', flush=True)
         
-        # Analysieren
+        # Analyze
         disk_infos = checker.analyze_all_disks(disks)
         
         if not args.json and not args.quiet:
             print(f" {Colors.OKGREEN}✓{Colors.ENDC}")
         
-        # Ausgabe
+        # Output
         if args.json:
             formatter.format_json(disk_infos)
         elif args.plain:
@@ -925,19 +925,19 @@ Für Cronjobs vollständigen Pfad verwenden:
         else:
             formatter.format_console(disk_infos)
         
-        # Exit-Code basierend auf kritischen Laufwerken
+        # Exit code based on critical drives
         critical_count = sum(1 for d in disk_infos if d.score >= 500)
         return 2 if critical_count > 0 else 0
         
     except KeyboardInterrupt:
-        print(f"\n{Colors.WARNING}Abgebrochen.{Colors.ENDC}")
+        print(f"\n{Colors.WARNING}Aborted.{Colors.ENDC}")
         return 130
     except Exception as e:
         if args.debug:
             import traceback
             traceback.print_exc()
         else:
-            print(f"\n{Colors.FAIL}Fehler: {e}{Colors.ENDC}")
+            print(f"\n{Colors.FAIL}Error: {e}{Colors.ENDC}")
         return 1
 
 if __name__ == "__main__":
