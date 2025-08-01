@@ -10,6 +10,7 @@ Features:
 - Debug/Verbose modes
 - Modular architecture
 - Robust tool path detection for cronjobs/systemd
+- Support for unmounted filesystems
 """
 
 import os
@@ -29,8 +30,8 @@ import time
 
 # Version
 VERSION_MAJOR="0"
-VERSION_MINOR="1"
-VERSION_PATCH="9"
+VERSION_MINOR="2"
+VERSION_PATCH="0"
 __version__ = f"{VERSION_MAJOR}.{VERSION_MINOR}.{VERSION_PATCH}"
 
 # ANSI Color Codes for better display
@@ -61,6 +62,7 @@ class Symbols:
     DISK = '💾'
     TEMP = '🌡️'
     CLOCK = '⏱️'
+    UNMOUNTED = '⏏️'
     
     @classmethod
     def disable(cls):
@@ -72,6 +74,7 @@ class Symbols:
         cls.DISK = '[D]'
         cls.TEMP = '[T]'
         cls.CLOCK = '[>]'
+        cls.UNMOUNTED = '[U]'
 
 # Default configuration
 DEFAULT_CONFIG = {
@@ -90,7 +93,8 @@ DEFAULT_CONFIG = {
         'usage_warning': 90,
         'usage_warning_score': 100,
         'usage_info': 80,
-        'usage_info_score': 20
+        'usage_info_score': 20,
+        'unmounted_partition_score': 30
     },
     'performance': {
         'max_workers': 4,
@@ -98,7 +102,8 @@ DEFAULT_CONFIG = {
     },
     'output': {
         'max_mount_points_shown': 3,
-        'show_io_stats': False
+        'show_io_stats': False,
+        'show_unmounted': True
     },
     'tools': {
         'search_paths': [
@@ -109,12 +114,32 @@ DEFAULT_CONFIG = {
             '/usr/local/bin',
             '/usr/local/sbin'
         ]
+    },
+    'filesystem': {
+        'check_unmounted': True,
+        'run_fsck': False,
+        'supported_fs': ['ext2', 'ext3', 'ext4', 'xfs', 'btrfs', 'ntfs', 'vfat', 'exfat']
     }
 }
 
+# Extended to include partition information
+class PartitionInfo:
+    def __init__(self, name, fstype, mountpoint, usage, total, used, free, uuid, label, is_mounted):
+        self.name = name
+        self.fstype = fstype
+        self.mountpoint = mountpoint
+        self.usage = usage
+        self.total = total
+        self.used = used
+        self.free = free
+        self.uuid = uuid
+        self.label = label
+        self.is_mounted = is_mounted
+        self.fs_checks = {}
+
 DiskInfo = namedtuple('DiskInfo', [
     'name', 'model', 'size', 'smart_health', 'smart_attrs', 
-    'temp', 'usage', 'mount_points', 'io_stats', 'score', 'issues',
+    'temp', 'usage', 'mount_points', 'partitions', 'io_stats', 'score', 'issues',
     'scan_time'
 ])
 
@@ -173,7 +198,7 @@ class ToolManager:
                 missing.append(tool)
         
         # Optional tools  
-        optional_tools = ['smartctl']
+        optional_tools = ['smartctl', 'blkid', 'fsck', 'file', 'dumpe2fs', 'xfs_info', 'btrfs']
         for tool in optional_tools:
             if not self.find_tool(tool):
                 optional.append(tool)
@@ -366,36 +391,210 @@ class DiskHealthChecker:
         
         return None
     
+    def get_partition_info(self, partition_name):
+        """Gets detailed information about a partition"""
+        info = {
+            'name': partition_name,
+            'fstype': None,
+            'mountpoint': None,
+            'uuid': None,
+            'label': None,
+            'is_mounted': False
+        }
+        
+        # Get filesystem type and UUID using blkid
+        if self.tool_manager.get_tool_path('blkid'):
+            stdout, stderr, code = self.run_command(['blkid', f'/dev/{partition_name}'])
+            if code == 0:
+                # Parse UUID
+                uuid_match = re.search(r'UUID="([^"]+)"', stdout)
+                if uuid_match:
+                    info['uuid'] = uuid_match.group(1)
+                
+                # Parse filesystem type
+                type_match = re.search(r'TYPE="([^"]+)"', stdout)
+                if type_match:
+                    info['fstype'] = type_match.group(1)
+                
+                # Parse label
+                label_match = re.search(r'LABEL="([^"]+)"', stdout)
+                if label_match:
+                    info['label'] = label_match.group(1)
+        
+        # Get mount point from lsblk
+        stdout, stderr, code = self.run_command(['lsblk', '-no', 'MOUNTPOINT', f'/dev/{partition_name}'])
+        if code == 0 and stdout.strip():
+            info['mountpoint'] = stdout.strip()
+            info['is_mounted'] = True
+        
+        return info
+    
+    def get_fsck_command(self, partition_name, fstype, force=False):
+        """Returns the appropriate fsck command for a filesystem type"""
+        if not fstype:
+            return None
+            
+        device_path = f'/dev/{partition_name}'
+        
+        # Map filesystem types to their fsck commands
+        fsck_commands = {
+            'ext2': f'fsck.ext2 {"-f" if force else ""} {device_path}',
+            'ext3': f'fsck.ext3 {"-f" if force else ""} {device_path}',
+            'ext4': f'fsck.ext4 {"-f" if force else ""} {device_path}',
+            'xfs': f'xfs_repair {"-n" if not force else ""} {device_path}',  # XFS uses -n for check-only
+            'btrfs': f'btrfs check {device_path}',
+            'ntfs': f'ntfsfix {device_path}',
+            'vfat': f'fsck.vfat -a {device_path}',
+            'exfat': f'fsck.exfat {device_path}',
+            'f2fs': f'fsck.f2fs {device_path}',
+            'reiserfs': f'reiserfsck --check {device_path}',
+            'jfs': f'fsck.jfs -n {device_path}',
+            'hfsplus': f'fsck.hfsplus -f {device_path}'
+        }
+        
+        # Get the base fsck command
+        base_command = fsck_commands.get(fstype)
+        if not base_command:
+            # Fallback to generic fsck
+            return f'fsck -t {fstype} {device_path}'
+        
+        # Add sudo prefix and cleanup extra spaces
+        return f'sudo {base_command}'.replace('  ', ' ').strip()
+    
+    def check_unmounted_filesystem(self, partition_name, fstype):
+        """Performs basic checks on unmounted filesystems"""
+        checks = {}
+        
+        if not self.config['filesystem']['check_unmounted']:
+            return checks
+        
+        # Only check if we have the appropriate tools and filesystem is supported
+        if fstype not in self.config['filesystem']['supported_fs']:
+            checks['supported'] = False
+            return checks
+        
+        checks['supported'] = True
+        
+        # Different checks based on filesystem type
+        if fstype in ['ext2', 'ext3', 'ext4']:
+            if self.tool_manager.get_tool_path('dumpe2fs'):
+                stdout, stderr, code = self.run_command(
+                    ['dumpe2fs', '-h', f'/dev/{partition_name}'], 
+                    timeout=5
+                )
+                if code == 0:
+                    # Check filesystem state
+                    state_match = re.search(r'Filesystem state:\s*(\w+)', stdout)
+                    if state_match:
+                        checks['state'] = state_match.group(1)
+                        checks['clean'] = state_match.group(1) == 'clean'
+                    
+                    # Check mount count
+                    mount_count_match = re.search(r'Mount count:\s*(\d+)', stdout)
+                    max_mount_match = re.search(r'Maximum mount count:\s*(-?\d+)', stdout)
+                    if mount_count_match and max_mount_match:
+                        mount_count = int(mount_count_match.group(1))
+                        max_mount = int(max_mount_match.group(1))
+                        if max_mount > 0:
+                            checks['mount_count'] = mount_count
+                            checks['max_mount_count'] = max_mount
+                            checks['needs_check'] = mount_count >= max_mount
+                    
+                    # Check last check time
+                    last_check_match = re.search(r'Last checked:\s*(.+)', stdout)
+                    if last_check_match:
+                        checks['last_checked'] = last_check_match.group(1).strip()
+        
+        elif fstype == 'xfs':
+            # XFS doesn't need regular fsck, but we can check if it's mountable
+            checks['clean'] = True  # XFS is self-healing
+        
+        elif fstype == 'btrfs':
+            if self.tool_manager.get_tool_path('btrfs'):
+                # Could add btrfs-specific checks here
+                checks['clean'] = True
+        
+        return checks
+    
     def get_disk_usage(self, dev):
         """Determines the usage of all partitions on a drive"""
         mount_info = []
+        partitions = []
         max_usage = 0
         
-        stdout, stderr, code = self.run_command(['lsblk', '-lno', 'NAME,MOUNTPOINT,FSTYPE', f'/dev/{dev}'])
+        # Get all partitions with detailed info
+        stdout, stderr, code = self.run_command(['lsblk', '-lnJ', '-o', 'NAME,MOUNTPOINT,FSTYPE,SIZE', f'/dev/{dev}'])
         if code != 0:
-            return None, []
+            return None, [], []
         
-        for line in stdout.strip().split('\n'):
-            if not line:
-                continue
-            parts = line.split(None, 2)
-            if len(parts) >= 2 and parts[1]:  # Has mountpoint
-                mountpoint = parts[1]
-                try:
-                    total, used, free = shutil.disk_usage(mountpoint)
-                    usage_pct = int(used / total * 100)
-                    mount_info.append({
-                        'mountpoint': mountpoint,
-                        'usage': usage_pct,
-                        'total': self.format_bytes(total),
-                        'used': self.format_bytes(used),
-                        'free': self.format_bytes(free)
-                    })
-                    max_usage = max(max_usage, usage_pct)
-                except Exception as e:
-                    self.logger.debug(f"Failed to get usage for {mountpoint}: {e}")
+        try:
+            data = json.loads(stdout)
+            for device in data.get('blockdevices', []):
+                part_name = device.get('name')
+                if part_name and part_name != dev:  # Skip the disk itself
+                    part_info = self.get_partition_info(part_name)
+                    
+                    # If mounted, get usage statistics
+                    if part_info['is_mounted'] and part_info['mountpoint']:
+                        try:
+                            total, used, free = shutil.disk_usage(part_info['mountpoint'])
+                            usage_pct = int(used / total * 100)
+                            mount_info.append({
+                                'mountpoint': part_info['mountpoint'],
+                                'usage': usage_pct,
+                                'total': self.format_bytes(total),
+                                'used': self.format_bytes(used),
+                                'free': self.format_bytes(free)
+                            })
+                            max_usage = max(max_usage, usage_pct)
+                            
+                            partition = PartitionInfo(
+                                name=part_name,
+                                fstype=part_info['fstype'],
+                                mountpoint=part_info['mountpoint'],
+                                usage=usage_pct,
+                                total=self.format_bytes(total),
+                                used=self.format_bytes(used),
+                                free=self.format_bytes(free),
+                                uuid=part_info['uuid'],
+                                label=part_info['label'],
+                                is_mounted=True
+                            )
+                            partitions.append(partition)
+                        except Exception as e:
+                            self.logger.debug(f"Failed to get usage for {part_info['mountpoint']}: {e}")
+                    else:
+                        # Unmounted partition
+                        size_str = device.get('size', 'Unknown')
+                        
+                        # Check unmounted filesystem if enabled
+                        fs_checks = {}
+                        if part_info['fstype'] and self.config['filesystem']['check_unmounted']:
+                            fs_checks = self.check_unmounted_filesystem(part_name, part_info['fstype'])
+                        
+                        partition = PartitionInfo(
+                            name=part_name,
+                            fstype=part_info['fstype'] or 'Unknown',
+                            mountpoint=None,
+                            usage=None,
+                            total=size_str,
+                            used=None,
+                            free=None,
+                            uuid=part_info['uuid'],
+                            label=part_info['label'],
+                            is_mounted=False
+                        )
+                        
+                        # Store filesystem check results
+                        if fs_checks:
+                            partition.fs_checks = fs_checks
+                            
+                        partitions.append(partition)
         
-        return max_usage if mount_info else None, mount_info
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Failed to parse partition info: {e}")
+        
+        return max_usage if mount_info else None, mount_info, partitions
     
     def get_io_stats(self, dev):
         """Gets I/O statistics from /proc/diskstats"""
@@ -470,6 +669,27 @@ class DiskHealthChecker:
                 score += cfg['usage_info_score']
                 issues.append(('INFO', f'Disk space getting low: {info.usage}%'))
         
+        # Check for unmounted partitions
+        unmounted_count = 0
+        unclean_count = 0
+        for partition in info.partitions:
+            if not partition.is_mounted:
+                unmounted_count += 1
+                # Check if filesystem needs attention
+                if partition.fs_checks:
+                    checks = partition.fs_checks
+                    if checks.get('state') and checks['state'] != 'clean':
+                        unclean_count += 1
+                        score += cfg['unmounted_partition_score'] * 2
+                        issues.append(('WARNING', f'Unmounted partition {partition.name} needs fsck (state: {checks["state"]})'))
+                    elif checks.get('needs_check'):
+                        score += cfg['unmounted_partition_score']
+                        issues.append(('INFO', f'Unmounted partition {partition.name} due for check'))
+        
+        if unmounted_count > 0 and unclean_count == 0:
+            score += cfg['unmounted_partition_score']
+            issues.append(('INFO', f'{unmounted_count} unmounted partition(s) found'))
+        
         return score, issues
     
     def analyze_disk(self, disk):
@@ -480,7 +700,7 @@ class DiskHealthChecker:
         smart_health, smart_output = self.get_smart_health(disk['name'])
         smart_attrs = self.get_smart_attributes(disk['name']) if smart_health not in ['NEED_ROOT', 'NO_SMART', 'NO_SMARTCTL'] else {}
         temp = self.get_temperature(disk['name'])
-        usage, mount_points = self.get_disk_usage(disk['name'])
+        usage, mount_points, partitions = self.get_disk_usage(disk['name'])
         io_stats = self.get_io_stats(disk['name'])
         
         info = DiskInfo(
@@ -492,6 +712,7 @@ class DiskHealthChecker:
             temp=temp,
             usage=usage,
             mount_points=mount_points,
+            partitions=partitions,
             io_stats=io_stats,
             score=0,
             issues=[],
@@ -541,7 +762,7 @@ class OutputFormatter:
         # Root check
         if not self.checker.is_root() and not self.args.quiet:
             print(f"{Colors.WARNING}{Symbols.WARNING} Note: Script running without root privileges.{Colors.ENDC}")
-            print(f"   Some tests (SMART, temperature) require root access.")
+            print(f"   Some tests (SMART, temperature, unmounted filesystems) require root access.")
             print(f"   Run with sudo for complete analysis.\n")
         
         # Sort by score
@@ -583,6 +804,20 @@ class OutputFormatter:
                     'percent': info.usage,
                     'mount_points': info.mount_points
                 },
+                'partitions': [
+                    {
+                        'name': p.name,
+                        'fstype': p.fstype,
+                        'mountpoint': p.mountpoint,
+                        'is_mounted': p.is_mounted,
+                        'usage': p.usage,
+                        'uuid': p.uuid,
+                        'label': p.label,
+                        'total': p.total,
+                        'fs_checks': p.fs_checks if p.fs_checks else {},
+                        'fsck_command': self.checker.get_fsck_command(p.name, p.fstype, force=True) if p.fstype and not p.is_mounted else None
+                    } for p in info.partitions
+                ],
                 'issues': [{'severity': sev, 'message': msg} for sev, msg in info.issues],
                 'scan_time': info.scan_time
             }
@@ -607,6 +842,20 @@ class OutputFormatter:
                 print(f"   Temperature: {info.temp}°C")
             if info.usage is not None:
                 print(f"   Usage: {info.usage}%")
+            
+            # Partition information
+            if info.partitions:
+                print("   Partitions:")
+                for p in info.partitions:
+                    status = "mounted" if p.is_mounted else "unmounted"
+                    print(f"      - {p.name} ({p.fstype}) - {status}")
+                    if p.is_mounted and p.usage:
+                        print(f"        Usage: {p.usage}% at {p.mountpoint}")
+                    elif not p.is_mounted and p.fs_checks:
+                        checks = p.fs_checks
+                        if checks.get('state'):
+                            print(f"        State: {checks['state']}")
+            
             if info.issues:
                 print("   Issues:")
                 for severity, issue in info.issues:
@@ -667,6 +916,35 @@ class OutputFormatter:
             for mp in info.mount_points[:max_shown]:
                 print(f"      └─ {mp['mountpoint']}: {mp['usage']}% ({mp['used']}/{mp['total']})")
         
+        # Show unmounted partitions if enabled
+        if self.checker.config['output']['show_unmounted']:
+            unmounted = [p for p in info.partitions if not p.is_mounted]
+            if unmounted:
+                print(f"   {Symbols.UNMOUNTED} Unmounted partitions:")
+                for part in unmounted:
+                    fs_info = f"{part.fstype}" if part.fstype else "Unknown FS"
+                    label_info = f" [{part.label}]" if part.label else ""
+                    print(f"      └─ {part.name}: {fs_info}{label_info} ({part.total})")
+                    
+                    # Show filesystem check results if available
+                    show_fsck_cmd = False
+                    if part.fs_checks:
+                        checks = part.fs_checks
+                        if checks.get('state') and checks['state'] != 'clean':
+                            print(f"         {Colors.WARNING}State: {checks['state']} - needs checking{Colors.ENDC}")
+                            show_fsck_cmd = True
+                        elif checks.get('needs_check'):
+                            print(f"         {Colors.WARNING}Check recommended (mount count: {checks['mount_count']}/{checks['max_mount_count']}){Colors.ENDC}")
+                            show_fsck_cmd = True
+                        if checks.get('last_checked'):
+                            print(f"         Last checked: {checks['last_checked']}")
+                    
+                    # Show fsck command if needed
+                    if show_fsck_cmd and part.fstype:
+                        fsck_cmd = self.checker.get_fsck_command(part.name, part.fstype, force=True)
+                        if fsck_cmd:
+                            print(f"         {Colors.OKGREEN}→ {fsck_cmd}{Colors.ENDC}")
+        
         # I/O Stats (if enabled)
         if info.io_stats and self.checker.config['output']['show_io_stats']:
             print(f"   {Symbols.CLOCK} I/O: {info.io_stats['read_ios']:,} reads, {info.io_stats['write_ios']:,} writes")
@@ -694,12 +972,20 @@ class OutputFormatter:
         
         critical_disks = []
         warning_disks = []
+        unmounted_issues = []
         
         for info in disk_infos:
             if info.score >= 500:
                 critical_disks.append(info)
             elif info.score >= 100:
                 warning_disks.append(info)
+            
+            # Check for unmounted filesystem issues
+            for part in info.partitions:
+                if not part.is_mounted and part.fs_checks:
+                    checks = part.fs_checks
+                    if checks.get('state') and checks['state'] != 'clean':
+                        unmounted_issues.append((info, part, checks))
         
         if critical_disks:
             print(f"{Colors.FAIL}{Colors.BOLD}CRITICAL - Immediate action required:{Colors.ENDC}")
@@ -722,9 +1008,37 @@ class OutputFormatter:
                         print(f"    → {issue}")
             print()
         
+        if unmounted_issues:
+            print(f"{Colors.WARNING}{Colors.BOLD}Unmounted filesystem issues:{Colors.ENDC}")
+            for disk, part, checks in unmounted_issues:
+                print(f"  {Colors.WARNING}• /dev/{part.name} on disk {disk.name}:{Colors.ENDC}")
+                if part.label:
+                    print(f"    Label: {part.label}")
+                print(f"    Filesystem: {part.fstype or 'Unknown'}")
+                
+                if checks.get('state') != 'clean':
+                    print(f"    → Filesystem needs checking (state: {checks['state']})")
+                elif checks.get('needs_check'):
+                    print(f"    → Filesystem check recommended (mount count: {checks['mount_count']}/{checks['max_mount_count']})")
+                
+                # Get appropriate fsck command
+                fsck_cmd = self.checker.get_fsck_command(part.name, part.fstype, force=True)
+                if fsck_cmd:
+                    print(f"    Command to check:")
+                    print(f"      {Colors.OKGREEN}{fsck_cmd}{Colors.ENDC}")
+                    
+                    # Add filesystem-specific notes
+                    if part.fstype == 'xfs':
+                        print(f"      {Colors.OKCYAN}Note: For XFS, use without -n flag to repair{Colors.ENDC}")
+                    elif part.fstype == 'btrfs':
+                        print(f"      {Colors.OKCYAN}Note: For btrfs, add --repair only if needed{Colors.ENDC}")
+                    elif part.fstype == 'ntfs':
+                        print(f"      {Colors.OKCYAN}Note: For NTFS, consider using Windows chkdsk for thorough repair{Colors.ENDC}")
+            print()
+        
         # Tool availability
         missing_tools = []
-        for tool in ['smartctl']:
+        for tool in ['smartctl', 'blkid']:
             if not self.checker.tool_manager.get_tool_path(tool):
                 missing_tools.append(tool)
         
@@ -733,12 +1047,14 @@ class OutputFormatter:
             print(f"  Install for extended functionality:")
             if 'smartctl' in missing_tools:
                 print(f"    {Colors.OKGREEN}sudo apt install smartmontools{Colors.ENDC} (for SMART tests)")
+            if 'blkid' in missing_tools:
+                print(f"    {Colors.OKGREEN}sudo apt install util-linux{Colors.ENDC} (for filesystem detection)")
             print()
         
         # General recommendations
         if not self.checker.is_root() and not self.args.quiet:
             print(f"{Colors.OKCYAN}{Colors.BOLD}Note:{Colors.ENDC}")
-            print(f"  • For complete SMART tests run the script with sudo:")
+            print(f"  • For complete analysis including unmounted filesystems run with sudo:")
             print(f"    {Colors.OKGREEN}sudo {' '.join(sys.argv)}{Colors.ENDC}")
             print()
         
@@ -749,6 +1065,47 @@ class OutputFormatter:
             print(f"  • Create regular backups of important data")
             print(f"  • Monitor temperature under high load")
             print(f"  • Keep at least 10-20% free disk space")
+            print(f"  • Check and mount/repair unmounted filesystems if needed")
+            
+            # Show general fsck tips if there are unmounted partitions
+            all_unmounted = []
+            for info in disk_infos:
+                all_unmounted.extend([p for p in info.partitions if not p.is_mounted])
+            
+            if all_unmounted:
+                print(f"\n{Colors.OKBLUE}{Colors.BOLD}Filesystem check commands:{Colors.ENDC}")
+                print(f"  Common fsck commands for different filesystems:")
+                
+                # Group by filesystem type
+                fs_types = {}
+                for part in all_unmounted:
+                    if part.fstype:
+                        if part.fstype not in fs_types:
+                            fs_types[part.fstype] = []
+                        fs_types[part.fstype].append(part)
+                
+                for fstype, parts in sorted(fs_types.items()):
+                    example_part = parts[0]
+                    fsck_cmd = self.checker.get_fsck_command(example_part.name, fstype, force=False)
+                    if fsck_cmd:
+                        print(f"  • {fstype}: {Colors.OKGREEN}{fsck_cmd}{Colors.ENDC}")
+                        
+                        # Add filesystem-specific tips
+                        if fstype in ['ext2', 'ext3', 'ext4']:
+                            print(f"    Use -f to force check even if filesystem seems clean")
+                            print(f"    Use -y to automatically fix errors (use with caution)")
+                        elif fstype == 'xfs':
+                            print(f"    Use without -n to actually repair (default is check-only)")
+                            print(f"    XFS is self-healing and rarely needs manual repair")
+                        elif fstype == 'btrfs':
+                            print(f"    Add --repair only if check reports errors")
+                            print(f"    Consider 'btrfs scrub' for online checking")
+                        elif fstype == 'ntfs':
+                            print(f"    Limited repair capability on Linux")
+                            print(f"    For thorough repair, use Windows chkdsk")
+                
+                print(f"\n  {Colors.WARNING}⚠ Always ensure partitions are unmounted before running fsck!{Colors.ENDC}")
+                print(f"  {Colors.OKCYAN}Tip: Boot from a live USB/CD for checking root partition{Colors.ENDC}")
     
     def _print_summary(self, disk_infos):
         """Summary"""
@@ -757,10 +1114,20 @@ class OutputFormatter:
         warning_count = sum(1 for d in disk_infos if 100 <= d.score < 500)
         ok_count = sum(1 for d in disk_infos if d.score < 100)
         
+        # Count partitions
+        total_partitions = sum(len(d.partitions) for d in disk_infos)
+        unmounted_partitions = sum(len([p for p in d.partitions if not p.is_mounted]) for d in disk_infos)
+        
         print(f"{Colors.BOLD}Summary:{Colors.ENDC}")
         print(f"  {Colors.FAIL if critical_count else Colors.OKGREEN}• Critical: {critical_count}{Colors.ENDC}")
         print(f"  {Colors.WARNING if warning_count else Colors.OKGREEN}• Warning:  {warning_count}{Colors.ENDC}")
         print(f"  {Colors.OKGREEN}• OK:       {ok_count}{Colors.ENDC}")
+        
+        if total_partitions > 0:
+            print(f"\n{Colors.BOLD}Partitions:{Colors.ENDC}")
+            print(f"  • Total:     {total_partitions}")
+            print(f"  • Mounted:   {total_partitions - unmounted_partitions}")
+            print(f"  • Unmounted: {unmounted_partitions}")
         
         total_scan_time = sum(d.scan_time for d in disk_infos)
         print(f"\nTotal scan time: {total_scan_time:.2f}s")
@@ -775,14 +1142,17 @@ def load_config(config_file):
         with open(config_file, 'r') as f:
             user_config = yaml.safe_load(f)
         
-        # Merge with default config
+        # Deep merge with default config
         config = DEFAULT_CONFIG.copy()
-        for key in user_config:
-            if key in config and isinstance(config[key], dict):
-                config[key].update(user_config[key])
-            else:
-                config[key] = user_config[key]
         
+        def deep_merge(base, update):
+            for key in update:
+                if key in base and isinstance(base[key], dict) and isinstance(update[key], dict):
+                    deep_merge(base[key], update[key])
+                else:
+                    base[key] = update[key]
+        
+        deep_merge(config, user_config)
         return config
     except Exception as e:
         logging.warning(f"Failed to load config file {config_file}: {e}")
@@ -792,7 +1162,7 @@ def create_sample_config():
     """Creates a sample configuration file"""
     sample_file = "disk_health_checker.yaml"
     with open(sample_file, 'w') as f:
-        yaml.dump(DEFAULT_CONFIG, f, default_flow_style=False)
+        yaml.dump(DEFAULT_CONFIG, f, default_flow_style=False, sort_keys=False)
     print(f"Sample configuration file created: {sample_file}")
 
 def main():
@@ -808,8 +1178,9 @@ Examples:
   %(prog)s --smart-only        # Run SMART tests only
   %(prog)s --config my.yaml    # With custom configuration
   %(prog)s --create-config     # Create sample configuration
+  %(prog)s --show-unmounted    # Include unmounted partitions in output
   
-For complete SMART analysis run with sudo:
+For complete SMART and filesystem analysis run with sudo:
   sudo %(prog)s
 
 For cronjobs use full path:
@@ -831,6 +1202,10 @@ For cronjobs use full path:
                        help='Check disk usage only')
     parser.add_argument('--check-only', action='store_true',
                        help='Check only, no recommendations')
+    parser.add_argument('--show-unmounted', action='store_true',
+                       help='Show unmounted partitions in output')
+    parser.add_argument('--check-unmounted', action='store_true',
+                       help='Perform filesystem checks on unmounted partitions')
     
     # Performance options
     parser.add_argument('--parallel', type=int, metavar='N',
@@ -866,11 +1241,15 @@ For cronjobs use full path:
     # Load configuration
     config = load_config(args.config)
     
-    # Override performance parameters
+    # Override configuration with command line arguments
     if args.parallel:
         config['performance']['max_workers'] = args.parallel
     if args.timeout:
         config['performance']['command_timeout'] = args.timeout
+    if args.show_unmounted:
+        config['output']['show_unmounted'] = True
+    if args.check_unmounted:
+        config['filesystem']['check_unmounted'] = True
     
     # Disable colors/symbols for plain/json
     if args.plain or args.json:
@@ -895,6 +1274,8 @@ For cronjobs use full path:
             if 'smartctl' in optional:
                 print(f"  {Colors.OKGREEN}sudo apt install smartmontools{Colors.ENDC} (Debian/Ubuntu)")
                 print(f"  {Colors.OKGREEN}sudo yum install smartmontools{Colors.ENDC} (RedHat/CentOS)")
+            if 'blkid' in optional:
+                print(f"  {Colors.OKGREEN}sudo apt install util-linux{Colors.ENDC} (filesystem detection)")
             print()
         
         if not args.json and not args.quiet:
